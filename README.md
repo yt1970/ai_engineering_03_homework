@@ -40,11 +40,53 @@ GPUは「T4」で行っています。
   
   2. 質問自体は、参照文書をLLMモデルであるGeminiに投入し、1.の条件を付して生成させた。合わせて模範回答も生成させ、評価に用いることとした。生成された質問と模範回答には、一部はルシネーションも見られたため、確認の上、正しい質問、正しい模範回答に改めて、使用した。
 
-  3. 
+  3. 設計の意図としては、参照文書を引用しなければ回答できない質問を作成することで、RAGの検索精度についても検証できることを意図した。
 
-・ RAGの実装方法と工夫点
-・ 結果の分析と考察
-・ 発展的な改善案(任意)
+
+## **II RAGの実装方法と工夫点**
+
+ 1. RAGの実装の際、文書のベクトル化に用いたのは、Paper&Hucks Vol.32」で井伊講師がご紹介していた日本語センテンストランスフォーマーである「sarashina-embedding-v1-1b」（SB Intuitions開発）を使用した。その理由は、日本語のベクトル化精度を期待したことによる。
+ 2. また、文書のチャンクはPDFのページ単位とし、ある程度文脈を保持した形でチャンクが構成されることを意図した。
+ 3. データのノイズなどの影響を見るため、「PyPDF2」がテキスト化したままの文書とテキストの整形（無駄な空白や改行の除去、必要な改行の追加）を自動で行った整形済み文書の２つを検証した。
+
+## **III 結果の分析と考察**
+1.   RAGなし
+
+    **合計点数:3**
+    **平均値：0.60**
+    
+2.   RAGあり（テキスト整形なし）
+
+    **合計点数:3**
+    **平均値:0.60**
+
+3.    RAGあり（テキスト整形なし）
+
+    **合計点数:7**
+    **平均値:1.40**
+
+　テキスト整形によるノイズの除去のおかげか、RAGあり（テキスト整形あり）において、７年度予算の総額やGDPの記載のないことなど一部は正確に回答できるようなった。
+
+
+　一方で、RAGを行っても回答の精度が大幅に向上しなかったのは、参照文献自体の構成の問題とも解釈できる。防衛省のみならず、政府機関が公表する資料には表やグラフが多用され、PyPDF2による単純なテキスト化では、表やグラフの文脈を表現しきれなかったものと考察する。
+
+　事実、質問とのコサイン類似度のトップ３のチャンク参照文書には、回答を含む文書が選ばれないケースがあった。一例を言えば、１番目の防衛予算の総額と内訳を問う質問に対し、総額を含む文書が選ばれましたが、内訳に関する文書は正しく選ばれなかった。これは、元文書においては、内訳の部分が表や円グラフで示されており、この部分が適切にテキスト化されなかったことによるものと推察する。
+
+## IV 発展的な改善案(任意)**
+#### 考察１　表やグラフの読み取り精度を上げる
+  　3で考察した通り、表やグラフを文脈にそってテキスト化することがRAGの精度を改善させるために必要である。これは、講義の中で触れられていた「データの質を上げる」というアプローチの１つであり、表がグラフのある文書をRAGの参照文書とする際には避けては通れない事項であると考察する。
+
+  　Geminiに参照文書を読ませて質問、模範回答を生成させた際、グラフや表に含まれる内容も正確に回答していた。マルチモーダルなLLMなどでテキスト化すれば精度の高い表やグラフの読み取りさせるのも、一つの手段となりうると考える。
+
+#### 考察２　RAGに用いる文書の選定
+  　一方で、テキスト化により文脈が失われる表やグラフを多用した文書ではなく、テキスト中心の文書をRAGの参照文書とするというアプローチもあると考える。
+
+#### 考察３　チャンクの分割の工夫
+  　今回は期限が短いこともあり、ページによるチャンク分割を行ったが、目次の項目ごとにチャンクを分けることにより、必要なチャンクをLLMに渡すことができ精度が向上するものと考えられる。
+  　その検証として、目次から抽出した目次の項目ごとにチャンクを分割することを自動化し、その上でRAGの参考文書にすることを試みたが、チャンク分割が自動でうまく分けられずに断念した。
+  　精度を見る上では手動で印をつけてチャンク分けすることも可能であるので、機会があればこの方法も試したい。
+
+
 
 # 宿題実施の方針
 
@@ -100,217 +142,12 @@ GPUは「T4」で行っています。
 ]
 ```
 
-
-
-
-
-
-
 ## 扱うモデル
 
-「google/gemma-2-2b-jpn-it」を使用します。このモデルは、リリース時期の関係上、以下の特徴を持ちます。
-
-- 「Inference Time Scaling」の概念が広まる前に訓練されており、このトピックに関する知識を持たないと想定される
-- この特性を活かし、純粋なベースライン評価から各手法の効果を観察する
-
-### 演習環境の準備
-"""
-
-!pip install --upgrade transformers
-!pip install google-colab-selenium
-!pip install bitsandbytes
-
-# ドライブの設定
-from google.colab import drive
-drive.mount('/content/drive')
-
-datafolder = "/content/drive/MyDrive/Colab Notebooks/AIengineering2025_colab/DAY3/data/"
-pdfname = "yosan_20250402.pdf"
-pdfpath = datafolder + pdfname
-
-# 演習用のコンテンツを取得
-!git clone https://github.com/yt1970/lecture-ai-engineering.git
-
-# HuggingFace Login
-from huggingface_hub import notebook_login
-
-notebook_login()
-
-# CUDAが利用可能ならGPUを、それ以外ならCPUをデバイスとして設定
-import torch
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-import random
-random.seed(0)
-
-# モデル(Gemma2)の読み込み
-
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-
-llm_model_name = "google/gemma-2-2b-jpn-it"
-tokenizer = AutoTokenizer.from_pretrained(llm_model_name)
-
-bnb_config = BitsAndBytesConfig(
-    load_in_4bit=True,
-    bnb_4bit_compute_dtype=torch.float16,
-    bnb_4bit_quant_type="nf4",
-    bnb_4bit_use_double_quant=False,
-)
-
-llm_model = AutoModelForCausalLM.from_pretrained(
-            llm_model_name,
-            device_map="auto",
-            quantization_config=bnb_config,
-            torch_dtype=torch.bfloat16,
-        )
-
-# QAファイルの読み込み
-# JSONファイルから質問を読み込む
-import json
-questions_file = datafolder + "Q&A.json" # ファイル名を適切に変更してください
-try:
-    with open(questions_file, 'r', encoding='utf-8') as f:
-        questions_data = json.load(f)
-except FileNotFoundError:
-    print(f"エラー: ファイル '{questions_file}' が見つかりません。")
-    exit()
-except json.JSONDecodeError:
-    print(f"エラー: ファイル '{questions_file}' のJSON形式が不正です。")
-    exit()
-
-prompt_questions = ""
-original_questions = []
-for item in questions_data:
-    prompt_questions += f'{{"質問": "{item["質問"]}"}},\n'
-    original_questions.append(item["質問"])
-prompt_questions = "[" + prompt_questions.rstrip(',\n') + "]"
-
-print(prompt_questions)
-
-question_json_file = datafolder + "question.json"
-parsed_response = json.loads(prompt_questions)
-with open(question_json_file, 'w', encoding='utf-8') as f:
-  json.dump(parsed_response, f, ensure_ascii=False, indent=2)
-
-"""# 1 ベースラインモデル評価
-**まずはベースモデルがどの程度知識を持っているか確かめる**
-
-### 1.1 回答内容の生成
-"""
-
-import json
-from transformers import AutoTokenizer, AutoModelForCausalLM
-import torch
-
-# モデルとトークナイザーの準備
-model_name = "google/gemma-2-2b-jpn-it"
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForCausalLM.from_pretrained(model_name).to("cuda" if torch.cuda.is_available() else "cpu")
-
-def generate_output(query):
-    messages = [
-        {"role": "user", "content": query},
-    ]
-    input_ids = tokenizer.apply_chat_template(
-        messages,
-        add_generation_prompt=True,
-        return_tensors="pt"
-    ).to(model.device)
-
-    outputs = model.generate(
-        input_ids,
-        max_new_tokens=1024,
-        do_sample=False,
-    )
-    return tokenizer.decode(outputs[0], skip_special_tokens=True)
+「google/gemma-2-2b-jpn-it」を使用します。
 
 
-
-prompt_questions = ""
-original_questions = []
-for item in questions_data:
-    prompt_questions += f'{{"質問": "{item["質問"]}"}},\n'
-    original_questions.append(item["質問"])
-prompt_questions = "[" + prompt_questions.rstrip(',\n') + "]"
-
-prompt = f"""以下の質問に、質問と回答のペアをJSON形式で出力してください。
-
-{prompt_questions}
-
-出力形式:
-[
-  {{
-    "質問": "質問1",
-    "回答": "回答1"
-  }},
-  {{
-    "質問": "質問2",
-    "回答": "回答2"
-  }},
-  ...
-]"""
-
-response = generate_output(prompt)
-print("生成されたレスポンス:\n", response)
-
-output_json_file = datafolder + "llm_responses.json"
-
-try:
-    parsed_response = json.loads(response)
-    with open(output_json_file, 'w', encoding='utf-8') as f:
-        json.dump(parsed_response, f, ensure_ascii=False, indent=2)
-    print(f"\nLLMのレスポンスは '{output_json_file}' に保存されました。")
-
-    for i, item in enumerate(parsed_response):
-        print(f"質問：\n{original_questions[i]}\n回答：\n{item['回答']}\n")
-
-except json.JSONDecodeError as e:
-    print(f"JSONデコードエラー: {e}")
-    print(f"生成されたレスポンス:\n{response}")
-except IndexError:
-    print("エラー: 生成された回答の数と質問の数が一致しません。")
-    print(f"生成されたレスポンス:\n{response}")
-
-print(response)
-
-"""モデルの出力が変な形になったので、整形し直して、JSONファイルに保存しました。
-
-保存ファイル名は以下の通りです。
-
-llm_responses.json
-
-
-"""
-
-import json
-
-# model 以降の部分を取り出す
-try:
-    # "model\n" の出現位置を探す
-    model_start = response.find("model\n")
-    if model_start == -1:
-        raise ValueError("response 内に 'model\\n' が見つかりませんでした。")
-
-    json_part = response[model_start + len("model\n"):]  # model\nの後ろの部分だけ
-
-    # JSONとして読み込む
-    parsed_response = json.loads(json_part)
-
-    # 保存
-    output_json_file = datafolder + "llm_responses.json"
-    with open(output_json_file, 'w', encoding='utf-8') as f:
-        json.dump(parsed_response, f, ensure_ascii=False, indent=2)
-
-    print(f"\nLLMのレスポンスは '{output_json_file}' に保存されました。")
-    for i, item in enumerate(parsed_response):
-        print(f"質問：\n{item['質問']}\n回答：\n{item['回答']}\n")
-
-except json.JSONDecodeError as e:
-    print(f"JSONの読み込みに失敗しました: {e}")
-except Exception as e:
-    print(f"エラーが発生しました: {e}")
-
-"""### 1.2 回答内容の評価方法
+### 1.2 回答内容の評価方法
 
 - 数値的な評価を見てみます。演習で講師が用いたRagasのAnswer Accuracy的な評価指標を以下のように作成しました。これを利用して数値的な評価を行います。
 評価指標の作成にあたっては、Ggeminiに壁打ちを致しました。
@@ -329,254 +166,10 @@ except Exception as e:
 
 - 無料で利用できるので、今回はGeminiAPIを利用してgemini-2.0-flashで評価しました。
 
-必要なライブラリーをインストールします。
-"""
+### 1.4 ベースモデルの結果
+**合計点数:3**
 
-!pip install langchain
-!pip install langchain-google-genai
-
-"""評価のテストを行います。"""
-
-from langchain_google_genai import ChatGoogleGenerativeAI
-
-# **ここにあなたの Google AI Studio の API キーを入力してください**
-GOOGLE_API_KEY = ""
-
-# 使用するモデル
-model_name = "gemini-2.0-flash"  # 動作確認済みのモデル
-
-# Gemini Pro モデルの初期化
-gemini_llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=GOOGLE_API_KEY)
-
-def evaluate_accuracy_with_gemini_formatted(question: str, context: str, answer: str):
-    """
-    Geminiを使ってRAGの回答の正確性を評価し、指定の形式で出力する関数。
-
-    Args:
-        question: 元の質問。
-        context: 検索されたコンテキスト。
-        answer: 生成された回答。
-
-    Returns:
-        str: 整形された評価結果（質問、回答、評価、理由）。
-    """
-    evaluation_prompt = f"""以下の情報に基づいて、生成された回答の正確性を0から4のスケールで評価してください。
-
-    評価スケール：
-    0: 全く不正確。回答の全てまたは主要な部分が誤っており、質問に対して全く的外れな情報を提供している。
-    1: ほぼ不正確。回答の大部分が不正確であるか、誤った情報に基づいている。わずかに正しい情報が含まれている程度。
-    2: 部分的に正確。回答には正確な情報も含まれているが、重要な誤りや不正確な点、または誤解を招く可能性のある記述が含まれている。
-    3: ほぼ正確。回答の大部分は正確であり、質問に対して適切に答えている。しかし、細部にわずかな不正確さ、曖昧さ、または重要でない情報の欠落が見られる場合がある。
-    4: 完全に正確。回答は質問に対して適切かつ網羅的に答えており、提示された情報に誤りや不確かな点は一切なく、事実に基づいている。コンテキストとも完全に一致している。
-
-    質問: {question}
-    コンテキスト: {context}
-    回答: {answer}
-
-    評価（0〜4の整数値）：
-    理由：
-    """
-
-    response = gemini_llm.invoke(evaluation_prompt)
-    # Geminiの応答を評価と理由に分割
-    parts = response.content.split("理由：", 1)
-    evaluation = parts[0].replace("評価（0〜4の整数値）：", "").strip()
-    reason = parts[1].strip() if len(parts) > 1 else "理由の抽出に失敗しました。"
-
-    formatted_output = f"""質問：{question}
-回答：{answer}
-評価：{evaluation}
-理由：{reason}
-"""
-    return formatted_output
-
-# 評価の実行例
-question_example = "東京タワーの高さは何メートルですか？"
-context_example = "東京タワーは、東京都港区にある電波塔であり、観光名所である。その高さは333メートルである。1958年に完成した。"
-answer_example_accurate = "東京タワーの高さは333メートルです。"
-answer_example_partially_accurate = "東京タワーの高さは約300メートルです。"
-answer_example_inaccurate = "東京タワーはパリにあります。"
-
-print("正確な回答の評価:")
-evaluation_accurate_formatted = evaluate_accuracy_with_gemini_formatted(question_example, context_example, answer_example_accurate)
-print(evaluation_accurate_formatted)
-
-print("\n部分的に正確な回答の評価:")
-evaluation_partially_accurate_formatted = evaluate_accuracy_with_gemini_formatted(question_example, context_example, answer_example_partially_accurate)
-print(evaluation_partially_accurate_formatted)
-
-print("\n不正確な回答の評価:")
-evaluation_inaccurate_formatted = evaluate_accuracy_with_gemini_formatted(question_example, context_example, answer_example_inaccurate)
-print(evaluation_inaccurate_formatted)
-
-"""### 1.3 ベースモデルの評価"""
-
-from langchain_google_genai import ChatGoogleGenerativeAI
-import json
-import re  # 正規表現モジュールを追加
-import os
-
-# **ここにあなたの Google AI Studio の API キーを入力してください**
-# GOOGLE_API_KEY = "YOUR_API_KEY"
-
-# 使用するモデル
-model_name = "gemini-2.0-flash"  # 動作確認済みのモデル
-
-# Gemini Pro モデルの初期化
-gemini_llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=GOOGLE_API_KEY)
-
-def evaluate_accuracy_with_gemini(question: str, answer: str, model_answer: str):
-    """
-    Geminiを使ってLLMの回答の正確性を評価する関数（コンテキストなし、質問と模範解答で評価）。
-
-    Args:
-        question: 元の質問。
-        answer: 生成された回答。
-        model_answer: 模範解答。
-
-    Returns:
-        tuple: 評価スコア (int) と理由 (str)。評価に失敗した場合は None, エラーメッセージ。
-    """
-    evaluation_prompt = f"""以下の情報に基づいて、生成された回答の正確性を0から4のスケールで評価してください。
-
-    評価スケール：
-    0: 全く不正確。回答の全てまたは主要な部分が誤っており、質問に対して全く的外れな情報を提供している。
-    1: ほぼ不正確。回答の大部分が不正確であるか、誤った情報に基づいている。わずかに正しい情報が含まれている程度。
-    2: 部分的に正確。回答には正確な情報も含まれているが、重要な誤りや不確かな点、または誤解を招く可能性のある記述が含まれている。
-    3: ほぼ正確。回答の大部分は正確であり、質問に対して適切に答えている。しかし、細部にわずかな不正確さ、曖昧さ、または重要でない情報の欠落が見られる場合がある。
-    4: 完全に正確。回答は質問に対して適切かつ網羅的に答えており、提示された情報に誤りや不確かな点は一切なく、特に模範解答の内容と照らし合わせて評価してください。
-
-    質問: {question}
-    生成された回答: {answer}
-    模範解答: {model_answer}
-
-    評価（0〜4の整数値）：
-    理由：
-    """
-
-    try:
-        response = gemini_llm.invoke(evaluation_prompt)
-        parts = response.content.split("理由：", 1)
-        evaluation_str = parts[0].replace("評価（0〜4の整数値）：", "").replace("評価：", "").strip()
-        match = re.search(r'\d+', evaluation_str)
-        if match:
-            score = int(match.group(0))
-        else:
-            score = None
-        reason = parts[1].strip() if len(parts) > 1 else "理由の抽出に失敗しました。"
-        return score, reason
-    except Exception as e:
-        return None, f"評価エラー: {e}"
-
-# 設定
-output_file = datafolder + "llm_responses.json" # LLMの出力先のJSONファイル名
-questions_file = datafolder + "Q&A.json" # 元の質問と模範解答のファイル名
-result_file = datafolder + "llm_result.json" # 評価結果を格納するファイル名
-summary_file = datafolder + "llm_result_summary.json" # 評価概要を格納するファイル名
-# datafolder = "" # 必要に応じてデータフォルダのパスを設定
-
-# JSONファイルから質問と回答を読み込む
-try:
-    with open(output_file, 'r', encoding='utf-8') as f:
-        llm_outputs = json.load(f)
-except FileNotFoundError:
-    print(f"エラー: ファイル '{output_file}' が見つかりません。")
-    exit()
-except json.JSONDecodeError:
-    print(f"エラー: ファイル '{output_file}' のJSON形式が不正です。")
-    exit()
-
-# JSONファイルから元の質問と模範解答を読み込む
-try:
-    with open(questions_file, 'r', encoding='utf-8') as f:
-        questions_data = json.load(f)
-except FileNotFoundError:
-    print(f"エラー: ファイル '{questions_file}' が見つかりません。")
-    exit()
-except json.JSONDecodeError:
-    print(f"エラー: ファイル '{questions_file}' のJSON形式が不正です。")
-    exit()
-
-evaluation_results = []
-total_score = 0
-num_evaluated = 0
-
-print("評価結果:")
-for i, item in enumerate(llm_outputs):
-    if i < len(questions_data):
-        original_question = questions_data[i]["質問"]
-        model_answer = questions_data[i].get("模範解答", "模範解答が提供されていません")
-        llm_answer = item.get("回答", "回答がありません")
-
-        print(f"\n質問番号: {i+1}")
-        print(f"質問内容: {original_question}")
-        print(f"回答番号: {i+1}")
-        print(f"回答内容: {llm_answer}")
-        print(f"模範解答: {model_answer}")
-
-        evaluation_result = evaluate_accuracy_with_gemini(original_question, llm_answer, model_answer)
-
-        result_entry = {
-            "質問番号": i + 1,
-            "質問内容": original_question,
-            "回答番号": i + 1,
-            "回答内容": llm_answer,
-            "模範解答": model_answer
-        }
-
-        if evaluation_result[0] is not None:
-            score, reason = evaluation_result
-            print(f"評価: {score}")
-            print(f"評価理由: {reason}")
-            result_entry["評価"] = score
-            result_entry["評価理由"] = reason
-            total_score += score
-            num_evaluated += 1
-        else:
-            print(f"評価エラー: {evaluation_result[1]}")
-            result_entry["評価エラー"] = evaluation_result[1]
-
-        evaluation_results.append(result_entry)
-
-    else:
-        print(f"\nエラー: 生成された回答の数({len(llm_outputs)})が、元の質問の数({len(questions_data)})を超えています。")
-        break
-
-print("\n---")
-summary = {}
-if num_evaluated > 0:
-    average_score = total_score / num_evaluated
-    summary["合計点数"] = total_score
-    summary["平均値"] = average_score
-    print(f"合計点数: {total_score}")
-    print(f"平均値: {average_score:.2f}")
-else:
-    summary["エラー"] = "評価を実行できませんでした。"
-    print("評価を実行できませんでした。")
-
-# 評価結果をJSONファイルに保存
-try:
-    with open(result_file, 'w', encoding='utf-8') as f:
-        json.dump(evaluation_results, f, ensure_ascii=False, indent=4)
-    print(f"\n評価結果を '{result_file}' に保存しました。")
-    if summary:
-        with open(summary_file, 'w', encoding='utf-8') as f:
-            json.dump(summary, f, ensure_ascii=False, indent=4)
-        print(f"評価の概要を '{summary_file}' に保存しました。")
-
-except Exception as e:
-    print(f"エラー: 評価結果のJSONファイルへの保存に失敗しました: {e}")
-
-"""
-わかりにくいので、合計点数と平均点を再度プリントします"""
-
-print(f"合計点数: {total_score}")
-print(f"平均値: {average_score:.2f}")
-
-"""### 1.4 ベースモデルの結果
-**合計点数:5**
-
-**平均値：1.00**
+**平均値：0.60**
 
 ０点で良さそうなところを１〜２点と評価していてやや甘めですが、許容内の評価だと思います。
 
@@ -600,364 +193,27 @@ print(f"平均値: {average_score:.2f}")
 * **制約条件**: モデルの入力トークン制限に収まるよう関連文のみを選択
 
 文章のベクトル化に使用するSentenceTransfomerは、「Paper&Hucks Vol.32」で井伊講師がご紹介していた日本語センテンストランスフォーマーである「sarashina-embedding-v1-1b」（SB Intuitions開発）を使用してみました。
-"""
 
-from sentence_transformers import SentenceTransformer
-
-# モデルの読み込み（初回のみDL）
-model = SentenceTransformer("sbintuitions/sarashina-embedding-v1-1b")
-
-"""#### 2.1.1 参照文書のベクトル化
+#### 2.1.1 参照文書のベクトル化
 テキスト整形なしの参照文書はページごとにチャンクに分けてJSONファイル化しています。（チャンク分割、JSONファイル化は別ノートブック「PDFtoChank.ipynb」にて実施
-"""
-
-import json
-# import faiss
-import numpy as np
-from tqdm import tqdm
-
-pattern1_file = datafolder + "pattern1_raw_pages.json"
-
-# JSONファイルの読み込み
-with open(pattern1_file, "r", encoding="utf-8") as f:
-    raw_data = json.load(f)
-
-# データ準備
-documents = []
-metadata = []
-
-for item in raw_data:
-    content = item["content"].replace("\n", " ").strip()
-    title = item["title"]
-    documents.append(content)
-    metadata.append({"title": title, "content": content})
-
-# エンベディング生成
-documents_embeddings = model.encode(documents, show_progress_bar=True, convert_to_numpy=True)
-
-"""#### 2.1.2 質問のembedding"""
-
-# JSONファイルから読み込み
-
-question_file = datafolder + 'question.json'
-
-with open(question_file, 'r', encoding='utf-8') as f:
-    question_data = json.load(f)
-
-# 質問文だけを抽出
-questions = [q["質問"] for q in question_data]
-
-# 質問のベクトル化
-# model = SentenceTransformer('all-MiniLM-L6-v2')
-question_embeddings = model.encode(questions, normalize_embeddings=True)
-
-"""#### 2.1.3 質問とドキュメントの類似度の算出
-
-質問とドキュメントのコサイン類似度を計算し、質問ごとに類似度の高い順に３つの文書をJSONファイルに格納します。
-
-ファイル名は
-
-pattern1_similarity.json
-
-です。
-"""
-
-import numpy as np
-import json
-from sklearn.preprocessing import normalize
-
-top_k = 3
-threshold = 0  # 類似度の閾値（任意で調整）
-
-results = []  # 出力用のリスト
-
-# コサイン類似度行列を計算
-# その前に正規化
-question_embeddings_norm = normalize(question_embeddings)
-documents_embeddings_norm = normalize(documents_embeddings)
-
-similarity_matrix = np.matmul(question_embeddings_norm, documents_embeddings_norm.T)
-
-# 各質問に対して類似度上位ドキュメントを取得
-for i, question in enumerate(questions):
-    top_indices = similarity_matrix[i].argsort()[::-1][:top_k]
-    matches = []
-    for rank, idx in enumerate(top_indices):
-        score = float(similarity_matrix[i][idx])
-        if score < threshold:
-            continue
-        matches.append({
-            "rank": rank + 1,
-            "score": score,
-            "doc_content":documents[idx]
-        })
-        print("rank:",rank +1)
-        print("score:",score)
-        print("doc_content:",documents[idx])
-
-    results.append({
-        "question": question,
-        "matches": matches
-    })
-
-# JSONファイルに保存
-with open(datafolder + "pattern1_similarity.json", "w", encoding="utf-8") as f:
-    json.dump(results, f, indent=2, ensure_ascii=False)
-
-print("JSONファイル 'pattern1_similarity.json' を保存しました。")
-
-# このセル使用しない。
-# import numpy as np
-
-# # コサイン類似度を計算（質問×ドキュメントのスコア行列）
-# similarity_matrix = np.matmul(question_embeddings, doc_embeddings.T)
-
-# # 各質問について類似度上位3件を取得
-# top_k = 3
-# for i, question in enumerate(questions):
-#     print(f"\n--- 質問{i+1}: {question} ---")
-#     top_indices = similarity_matrix[i].argsort()[::-1][:top_k]
-#     for rank, idx in enumerate(top_indices):
-#         print(f"  Top {rank+1}: 類似度={similarity_matrix[i][idx]:.4f}, ドキュメント: {docs[idx]}")
-
-"""### 2.1.4 初期RAGによる回答の生成
+### 2.1.4 初期RAGによる回答の生成
 では、得られた類似度トップ３をプロンプトに組み込んで回答を生成します。
 
 生成した回答もJSONファイルに保存します。
 
 ファイル名は**raw_rag_response.json**です。
 """
-
-# プロンプト生成関数
-def build_rag_prompt(question, top_docs):
-    prompt = f"以下の質問に対して、与えられた参考情報を使って正確に回答してください。\n\n"
-    prompt += f"質問:\n{question}\n\n"
-    prompt += "参考情報:\n"
-    for i, doc in enumerate(top_docs, 1):
-        prompt += f"{i}. {doc['content']}\n"
-    prompt += "\n回答:\n"
-    return prompt
-
-## 回答生成関数
-def generate_answer(prompt):
-    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=2048).to(device)
-    output_ids = model.generate(
-        **inputs,
-        max_new_tokens=512,
-        do_sample=False,
-        temperature=0
-    )
-    output_text = tokenizer.decode(output_ids[0], skip_special_tokens=True)
-    return output_text.split("回答:")[-1].strip()
-
-model_name = "google/gemma-2-2b-jpn-it"
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForCausalLM.from_pretrained(model_name).to("cuda" if torch.cuda.is_available() else "cpu")
-
-
-response = []
-
-for i, question in tqdm(enumerate(questions), total=len(questions)):
-    top_indices = similarity_matrix[i].argsort()[::-1][:3]  # Top 3
-    top_docs = [
-        {
-            "rank": rank + 1,
-            "score": float(similarity_matrix[i][idx]),
-            "content": documents[idx]
-        }
-        for rank, idx in enumerate(top_indices)
-    ]
-
-    prompt = build_rag_prompt(question, top_docs)
-    answer = generate_answer(prompt)
-
-    print(f"\n--- 質問{i+1}: {question} ---")
-    print(f"生成された回答:\n{answer}")
-
-    response.append({
-        "質問": question,
-        # "top_docs": top_docs,
-        "回答": answer
-    })
-
-# 保存
-with open(datafolder + "row_rag_responses.json", "w", encoding="utf-8") as f:
-    json.dump(response, f, ensure_ascii=False, indent=2)
-
-print(results)
-
-"""### 2.1.5 初期RAGによる回答結果の評価
+### 2.1.5 初期RAGによる回答結果の評価
 
 1.2で説明したGeminiAPIを利用した評価方法で評価します。
-"""
+### 2.1.5 テキスト整形なしRAG（初期RAG）の結果
 
-from langchain_google_genai import ChatGoogleGenerativeAI
-import json
-import re  # 正規表現モジュールを追加
-import os
+テキストの整形なしでRAGを使いましたが、スコアが向上しませんでした。なぜかは最後に考察します。
 
-# **ここにあなたの Google AI Studio の API キーを入力してください**
-GOOGLE_API_KEY = ""
+合計点数: 3
+平均値: 0.60
 
-# 使用するモデル
-model_name = "gemini-2.0-flash"
-
-# Gemini Pro モデルの初期化
-gemini_llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=GOOGLE_API_KEY)
-
-def evaluate_accuracy_with_gemini(question: str, answer: str, model_answer: str):
-    """
-    Geminiを使ってLLMの回答の正確性を評価する関数（コンテキストなし、質問と模範解答で評価）。
-
-    Args:
-        question: 元の質問。
-        answer: 生成された回答。
-        model_answer: 模範解答。
-
-    Returns:
-        tuple: 評価スコア (int) と理由 (str)。評価に失敗した場合は None, エラーメッセージ。
-    """
-    evaluation_prompt = f"""以下の情報に基づいて、生成された回答の正確性を0から4のスケールで評価してください。
-
-    評価スケール：
-    0: 全く不正確。回答の全てまたは主要な部分が誤っており、質問に対して全く的外れな情報を提供している。
-    1: ほぼ不正確。回答の大部分が不正確であるか、誤った情報に基づいている。わずかに正しい情報が含まれている程度。
-    2: 部分的に正確。回答には正確な情報も含まれているが、重要な誤りや不確かな点、または誤解を招く可能性のある記述が含まれている。
-    3: ほぼ正確。回答の大部分は正確であり、質問に対して適切に答えている。しかし、細部にわずかな不正確さ、曖昧さ、または重要でない情報の欠落が見られる場合がある。
-    4: 完全に正確。回答は質問に対して適切かつ網羅的に答えており、提示された情報に誤りや不確かな点は一切なく、特に模範解答の内容と照らし合わせて評価してください。
-
-    質問: {question}
-    生成された回答: {answer}
-    模範解答: {model_answer}
-
-    評価（0〜4の整数値）：
-    理由：
-    """
-
-    try:
-        response = gemini_llm.invoke(evaluation_prompt)
-        parts = response.content.split("理由：", 1)
-        evaluation_str = parts[0].replace("評価（0〜4の整数値）：", "").replace("評価：", "").strip()
-        match = re.search(r'\d+', evaluation_str)
-        if match:
-            score = int(match.group(0))
-        else:
-            score = None
-        reason = parts[1].strip() if len(parts) > 1 else "理由の抽出に失敗しました。"
-        return score, reason
-    except Exception as e:
-        return None, f"評価エラー: {e}"
-
-# 設定
-output_file = datafolder + "row_rag_responses.json" # LLMの出力先のJSONファイル名
-questions_file = datafolder + "Q&A.json" # 元の質問と模範解答のファイル名
-result_file = datafolder + "row_rag_result.json" # 評価結果を格納するファイル名
-summary_file = datafolder + "row_rag_result_summary.json" # 評価概要を格納するファイル名
-# datafolder = "" # 必要に応じてデータフォルダのパスを設定
-
-# JSONファイルから質問と回答を読み込む
-try:
-    with open(output_file, 'r', encoding='utf-8') as f:
-        llm_outputs = json.load(f)
-except FileNotFoundError:
-    print(f"エラー: ファイル '{output_file}' が見つかりません。")
-    exit()
-except json.JSONDecodeError:
-    print(f"エラー: ファイル '{output_file}' のJSON形式が不正です。")
-    exit()
-
-# JSONファイルから元の質問と模範解答を読み込む
-try:
-    with open(questions_file, 'r', encoding='utf-8') as f:
-        questions_data = json.load(f)
-except FileNotFoundError:
-    print(f"エラー: ファイル '{questions_file}' が見つかりません。")
-    exit()
-except json.JSONDecodeError:
-    print(f"エラー: ファイル '{questions_file}' のJSON形式が不正です。")
-    exit()
-
-evaluation_results = []
-total_score = 0
-num_evaluated = 0
-
-print("評価結果:")
-for i, item in enumerate(llm_outputs):
-    if i < len(questions_data):
-        original_question = questions_data[i]["質問"]
-        model_answer = questions_data[i].get("模範解答", "模範解答が提供されていません")
-        llm_answer = item.get("回答", "回答がありません")
-
-        print(f"\n質問番号: {i+1}")
-        print(f"質問内容: {original_question}")
-        # print(f"回答番号: {i+1}")
-        print(f"回答内容: {llm_answer}")
-        print(f"模範解答: {model_answer}")
-
-        evaluation_result = evaluate_accuracy_with_gemini(original_question, llm_answer, model_answer)
-
-        result_entry = {
-            "質問番号": i + 1,
-            "質問内容": original_question,
-            "回答番号": i + 1,
-            "回答内容": llm_answer,
-            "模範解答": model_answer
-        }
-
-        if evaluation_result[0] is not None:
-            score, reason = evaluation_result
-            print(f"評価: {score}")
-            print(f"評価理由: {reason}")
-            result_entry["評価"] = score
-            result_entry["評価理由"] = reason
-            total_score += score
-            num_evaluated += 1
-        else:
-            print(f"評価エラー: {evaluation_result[1]}")
-            result_entry["評価エラー"] = evaluation_result[1]
-
-        evaluation_results.append(result_entry)
-
-    else:
-        print(f"\nエラー: 生成された回答の数({len(llm_outputs)})が、元の質問の数({len(questions_data)})を超えています。")
-        break
-
-print("\n---")
-summary = {}
-if num_evaluated > 0:
-    average_score = total_score / num_evaluated
-    summary["合計点数"] = total_score
-    summary["平均値"] = average_score
-    print(f"合計点数: {total_score}")
-    print(f"平均値: {average_score:.2f}")
-else:
-    summary["エラー"] = "評価を実行できませんでした。"
-    print("評価を実行できませんでした。")
-
-# 評価結果をJSONファイルに保存
-try:
-    with open(result_file, 'w', encoding='utf-8') as f:
-        json.dump(evaluation_results, f, ensure_ascii=False, indent=4)
-    print(f"\n評価結果を '{result_file}' に保存しました。")
-    if summary:
-        with open(summary_file, 'w', encoding='utf-8') as f:
-            json.dump(summary, f, ensure_ascii=False, indent=4)
-        print(f"評価の概要を '{summary_file}' に保存しました。")
-
-except Exception as e:
-    print(f"エラー: 評価結果のJSONファイルへの保存に失敗しました: {e}")
-
-"""###2.1.5 テキスト整形なしRAG（初期RAG）の結果
-
-テキストの整形なしでRAGを使いましたが、スコアが逆に下がりました。なぜかは最後に考察します。
-
-
-"""
-
-print(f"合計点数: {total_score}")
-print(f"平均値: {average_score:.2f}")
-
-"""## 2.2 テキスト整形による品質改善検証（品質改善？RAG)
+## 2.2 テキスト整形による品質改善検証（品質改善？RAG)
 
 
 　DAY３の講義において、データをきれいにすることが重要であるとの言及があったことから、さらなる精度向上を目指して、テキストファイルの整形を試みました。
@@ -965,311 +221,62 @@ print(f"平均値: {average_score:.2f}")
 　手動でテキストをきれいにするのは手間ですので正規表現などを用いて自動で整形しました。（別ファイルPDFtoChank.ipynbにて実施）
 整形の方針は、無駄な空白を除く、無駄な改行を除く、必要な改行を入れる。の３点を実施しました。
 
-元のテキスト
-
-整形後のテキスト
-
 ### 2.2.1 テキスト整形した参照文書のベクトル化
 
 
 参照文書のテキストの整形を行い、ページごとにチャンクに分けてJSONファイル化しています。（チャンク分割、JSONファイル化は別ノートブック「PDFtoChank.ipynb」にて実施）
 これを、整形なしの文書と同様、ベクトル化します。
 embeddingのモデルは同様に「sarashina-embedding-v1-1b」
-"""
-
-from sentence_transformers import SentenceTransformer
-
-# モデルの読み込み（初回のみDL）
-model = SentenceTransformer("sbintuitions/sarashina-embedding-v1-1b")
-
-import json
-# import faiss
-import numpy as np
-from tqdm import tqdm
-
-pattern1_file = datafolder + "pattern2_cleand_pages.json"
-
-# JSONファイルの読み込み
-with open(pattern1_file, "r", encoding="utf-8") as f:
-    raw_data = json.load(f)
-
-# データ準備
-documents = []
-metadata = []
-
-for item in raw_data:
-    content = item["content"].replace("\n", " ").strip()
-    title = item["title"]
-    documents.append(content)
-    metadata.append({"title": title, "content": content})
-
-# エンベディング生成
-documents_embeddings = model.encode(documents, show_progress_bar=True, convert_to_numpy=True)
-
-"""### 2.2.2 質問とドキュメントの類似度の算出
+### 2.2.2 質問とドキュメントの類似度の算出
 
 質問は同じものを用いるので、次は類似度の算出です。同様にコサイン類似度で算出し、結果をJSONファイルに書き出します。
 
 保存するファイル名は、**pattern2_similarity.json** です。
-"""
 
-import numpy as np
-import json
-from sklearn.preprocessing import normalize
+### 2.2.4 品質改善？RAGによる回答結果の評価
+  **合計点数:7**
+**平均値:1.40**
 
-top_k = 3
-threshold = 0  # 類似度の閾値（任意で調整）
+### 2.2.5 テキスト整形ありのRAG（品質改善？RAG）の結果
 
-results = []  # 出力用のリスト
+テキスト整形の結果、少しは品質が改善しました。テキスト整形が効果を挙げた部分もあるようですが、参考情報から読み取れない回答を回答不可とした部分の配点が功を奏しただけであり、だけですので、必ずしもテキスト整形の効果とも言えないと考えられます。  
 
-# その前に正規化
-question_embeddings_norm = normalize(question_embeddings)
-documents_embeddings_norm = normalize(documents_embeddings)
+# 3 全体を通じた考察
+GeminiAPIでの評価の結果以下の通りとなりました。
 
-similarity_matrix = np.matmul(question_embeddings_norm, documents_embeddings_norm.T)
+1.   RAGなし
 
-# 各質問に対して類似度上位ドキュメントを取得
-for i, question in enumerate(questions):
-    top_indices = similarity_matrix[i].argsort()[::-1][:top_k]
-    matches = []
-    for rank, idx in enumerate(top_indices):
-        score = float(similarity_matrix[i][idx])
-        if score < threshold:
-            continue
-        matches.append({
-            "rank": rank + 1,
-            "score": score,
-            "doc_content": documents[idx]
-        })
-        print("rank:",rank +1)
-        print("score:",score)
-        print("doc_content:",documents[idx])
+    **合計点数:3**
+    **平均値：0.60**
+2.   RAGあり（テキスト整形なし）
 
-    results.append({
-        "question": question,
-        "matches": matches
-    })
+    **合計点数:3**
+    **平均値:0.60**
 
-# JSONファイルに保存
-with open(datafolder + "pattern2_similarity.json", "w", encoding="utf-8") as f:
-    json.dump(results, f, indent=2, ensure_ascii=False)
+3.    RAGあり（テキスト整形なし）
 
-print("JSONファイル 'pattern2_similarity.json' を保存しました。")
+    **合計点数:7**
+    **平均値:1.40**
 
-"""### 2.2.3 品質改善？RAGによる回答の生成
+　テキスト整形によるノイズの除去のおかげか、RAGあり（テキスト整形あり）において、７年度予算の総額やGDPの記載のないことなど一部は正確に回答できるようになりました。
 
-テキスト整形により品質が改善したと思われるRAGによる回答の生成を行います。
 
-回答結果はJSONファイルに書き出します。
-ファイル名は **kai_rag_responses.json**です。
-"""
+　一方で、RAGを行っても回答の精度が大幅に向上しなかったのは、参照文献自体の構成の問題かもしれません。防衛省のみならず、政府機関が公表する資料には表やグラフが多用され、PyPDF2による単純なテキスト化では、表やグラフの文脈を表現しきれなかったものと考えられます。
 
-model_name = "google/gemma-2-2b-jpn-it"
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForCausalLM.from_pretrained(model_name).to("cuda" if torch.cuda.is_available() else "cpu")
+　事実、質問とのコサイン類似度のトップ３のチャンク参照文書には、回答を含む文書が選ばれないケースがありました。例えば、１番目の防衛予算の総額と内訳を問う質問に対し、総額を含む文書が選ばれましたが、内訳に関する文書は正しく選ばれませんでした。これは、元文書においては、内訳の部分が表や円グラフで示されており、この部分が適切にテキスト化されていませんでした。
 
-results = []
+# 4 さらに改善させるための考察
+#### 考察１　表やグラフの読み取り精度を上げる
+  　3で考察した通り、表やグラフを文脈にそってテキスト化することがRAGの精度を改善させるために必要であると考えます。これは、講義の中でお話のあったデータの質をあげるというアプローチの１つであり、表がグラフのある文書をRAGの参照文書とする際には避けては通れない事項であると考えます。
 
-for i, question in tqdm(enumerate(questions), total=len(questions)):
-    top_indices = similarity_matrix[i].argsort()[::-1][:3]  # Top 3
-    top_docs = [
-        {
-            "rank": rank + 1,
-            "score": float(similarity_matrix[i][idx]),
-            "content": documents[idx]
-        }
-        for rank, idx in enumerate(top_indices)
-    ]
+  　Geminiに参照文書を読ませて質問、模範回答を生成させた際、グラフや表に含まれる内容も正確に回答していました。マルチモーダルなLLMなどでテキスト化すれば精度の高い表やグラフの読み取りさせるのも、一つの手段となりうると考えられます。
 
-    prompt = build_rag_prompt(question, top_docs)
-    answer = generate_answer(prompt)
+#### 考察２　RAGに用いる文書の選定
+  　一方で、テキスト化により文脈が失われる表やグラフを多用した文書ではなく、テキスト中心の文書をRAGの参照文書とするというアプローチもあると思います。
 
-    print(f"\n--- 質問{i+1}: {question} ---")
-    print(f"生成された回答:\n{answer}")
+#### 考察３　チャンクの分割の工夫
+  　今回は期限が短いこともあり、ページによるチャンク分割を行いましたが、目次の項目ごとにチャンクを分けることにより、必要なチャンクをLLMに渡すことができ精度が向上するものと考えられます。
+  　その検証として、目次から抽出した目次の項目ごとにチャンクを分割することを自動化し、その上でRAGの参考文書にすることを試みたのですが、チャンク分割が自動でうまく分けられずに諦めました。
+  精度を見る上では手動で印をつけてチャンク分けすることも可能ですので、機会があればこの方法も試したいと思います。
 
-    results.append({
-        "question": question,
-        # "top_docs": top_docs,
-        "generated_answer": answer
-    })
 
-# 保存
-with open(datafolder + "kai_rag_responses.json", "w", encoding="utf-8") as f:
-    json.dump(results, f, ensure_ascii=False, indent=2)
-
-"""### 2.2.4 品質改善？RAGによる回答結果の評価
-
-これまでと同様GeminiAPIによる回答の評価を行います。
-"""
-
-from langchain_google_genai import ChatGoogleGenerativeAI
-import json
-import re  # 正規表現モジュールを追加
-import os
-
-# **ここにあなたの Google AI Studio の API キーを入力してください**
-GOOGLE_API_KEY = ""
-
-# 使用するモデル
-model_name = "gemini-2.0-flash"
-
-# Gemini Pro モデルの初期化
-gemini_llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=GOOGLE_API_KEY)
-
-def evaluate_accuracy_with_gemini(question: str, answer: str, model_answer: str):
-    """
-    Geminiを使ってLLMの回答の正確性を評価する関数（コンテキストなし、質問と模範解答で評価）。
-
-    Args:
-        question: 元の質問。
-        answer: 生成された回答。
-        model_answer: 模範解答。
-
-    Returns:
-        tuple: 評価スコア (int) と理由 (str)。評価に失敗した場合は None, エラーメッセージ。
-    """
-    evaluation_prompt = f"""以下の情報に基づいて、生成された回答の正確性を0から4のスケールで評価してください。
-
-    評価スケール：
-    0: 全く不正確。回答の全てまたは主要な部分が誤っており、質問に対して全く的外れな情報を提供している。
-    1: ほぼ不正確。回答の大部分が不正確であるか、誤った情報に基づいている。わずかに正しい情報が含まれている程度。
-    2: 部分的に正確。回答には正確な情報も含まれているが、重要な誤りや不確かな点、または誤解を招く可能性のある記述が含まれている。
-    3: ほぼ正確。回答の大部分は正確であり、質問に対して適切に答えている。しかし、細部にわずかな不正確さ、曖昧さ、または重要でない情報の欠落が見られる場合がある。
-    4: 完全に正確。回答は質問に対して適切かつ網羅的に答えており、提示された情報に誤りや不確かな点は一切なく、特に模範解答の内容と照らし合わせて評価してください。
-
-    質問: {question}
-    生成された回答: {answer}
-    模範解答: {model_answer}
-
-    評価（0〜4の整数値）：
-    理由：
-    """
-
-    try:
-        response = gemini_llm.invoke(evaluation_prompt)
-        parts = response.content.split("理由：", 1)
-        evaluation_str = parts[0].replace("評価（0〜4の整数値）：", "").replace("評価：", "").strip()
-        match = re.search(r'\d+', evaluation_str)
-        if match:
-            score = int(match.group(0))
-        else:
-            score = None
-        reason = parts[1].strip() if len(parts) > 1 else "理由の抽出に失敗しました。"
-        return score, reason
-    except Exception as e:
-        return None, f"評価エラー: {e}"
-
-# 設定
-output_file = datafolder + "kai_rag_responses.json" # LLMの出力先のJSONファイル名
-questions_file = datafolder + "Q&A.json" # 元の質問と模範解答のファイル名
-result_file = datafolder + "kai_rag_result.json" # 評価結果を格納するファイル名
-summary_file = datafolder + "kai_rag_result_summary.json" # 評価概要を格納するファイル名
-# datafolder = "" # 必要に応じてデータフォルダのパスを設定
-
-# JSONファイルから質問と回答を読み込む
-try:
-    with open(output_file, 'r', encoding='utf-8') as f:
-        llm_outputs = json.load(f)
-except FileNotFoundError:
-    print(f"エラー: ファイル '{output_file}' が見つかりません。")
-    exit()
-except json.JSONDecodeError:
-    print(f"エラー: ファイル '{output_file}' のJSON形式が不正です。")
-    exit()
-
-# JSONファイルから元の質問と模範解答を読み込む
-try:
-    with open(questions_file, 'r', encoding='utf-8') as f:
-        questions_data = json.load(f)
-except FileNotFoundError:
-    print(f"エラー: ファイル '{questions_file}' が見つかりません。")
-    exit()
-except json.JSONDecodeError:
-    print(f"エラー: ファイル '{questions_file}' のJSON形式が不正です。")
-    exit()
-
-evaluation_results = []
-total_score = 0
-num_evaluated = 0
-
-print("評価結果:")
-for i, item in enumerate(llm_outputs):
-    if i < len(questions_data):
-        original_question = questions_data[i]["質問"]
-        model_answer = questions_data[i].get("模範解答", "模範解答が提供されていません")
-        llm_answer = item.get("回答", "回答がありません")
-
-        print(f"\n質問番号: {i+1}")
-        print(f"質問内容: {original_question}")
-        # print(f"回答番号: {i+1}")
-        print(f"回答内容: {llm_answer}")
-        print(f"模範解答: {model_answer}")
-
-        evaluation_result = evaluate_accuracy_with_gemini(original_question, llm_answer, model_answer)
-
-        result_entry = {
-            "質問番号": i + 1,
-            "質問内容": original_question,
-            "回答番号": i + 1,
-            "回答内容": llm_answer,
-            "模範解答": model_answer
-        }
-
-        if evaluation_result[0] is not None:
-            score, reason = evaluation_result
-            print(f"評価: {score}")
-            print(f"評価理由: {reason}")
-            result_entry["評価"] = score
-            result_entry["評価理由"] = reason
-            total_score += score
-            num_evaluated += 1
-        else:
-            print(f"評価エラー: {evaluation_result[1]}")
-            result_entry["評価エラー"] = evaluation_result[1]
-
-        evaluation_results.append(result_entry)
-
-    else:
-        print(f"\nエラー: 生成された回答の数({len(llm_outputs)})が、元の質問の数({len(questions_data)})を超えています。")
-        break
-
-print("\n---")
-summary = {}
-if num_evaluated > 0:
-    average_score = total_score / num_evaluated
-    summary["合計点数"] = total_score
-    summary["平均値"] = average_score
-    print(f"合計点数: {total_score}")
-    print(f"平均値: {average_score:.2f}")
-else:
-    summary["エラー"] = "評価を実行できませんでした。"
-    print("評価を実行できませんでした。")
-
-# 評価結果をJSONファイルに保存
-try:
-    with open(result_file, 'w', encoding='utf-8') as f:
-        json.dump(evaluation_results, f, ensure_ascii=False, indent=4)
-    print(f"\n評価結果を '{result_file}' に保存しました。")
-    if summary:
-        with open(summary_file, 'w', encoding='utf-8') as f:
-            json.dump(summary, f, ensure_ascii=False, indent=4)
-        print(f"評価の概要を '{summary_file}' に保存しました。")
-
-except Exception as e:
-    print(f"エラー: 評価結果のJSONファイルへの保存に失敗しました: {e}")
-
-"""### 2.2.5 テキスト整形ありのRAG（品質改善？RAG）の結果
-
-テキスト整形の結果、あまり品質改善しました。テキスト整形が効果を挙げたようにも見えますが、参考情報から読み取れない回答を回答不可としただけですので、必ずしもテキスト整形の効果とも言えないと考えられます。
-"""
-
-print(f"合計点数: {total_score}")
-print(f"平均値: {average_score:.2f}")
-
-"""# 3 さらに改善させるための考察
-テキストの品質の他にRAGによる回答品質を上げる要素として、参照文書のチャンク分割の工夫があると思います。
-
-今回、目次から抽出した目次の項目ごとにチャンクを分割することを自動化し、その上でRAGの参考文書にすることを試みたのですが、チャンク分割が自動でうまく分けられずに諦めました。
-
-精度を見る上では手動で印をつけてチャンク分けすることも可能ですので、機会があればこれを試したいと思います。
-"""
